@@ -28,6 +28,18 @@ python tools/summarize_eval.py reports/synthetic-demo.json --csv reports/synthet
 
 演示只生成明确标为 `synthetic_example` 的人工样例，不是机器人评估成绩。CSV 保留这一标记，避免与真实评估混淆。
 
+## 改进发生在哪里
+
+```mermaid
+flowchart LR
+    A[模型预测一组动作] --> B[按时间顺序选择前 N 步]
+    B --> C[评估环境执行]
+    C --> D[逐轮 JSON 记录]
+    D --> E[按任务 / 实验导出 CSV]
+```
+
+动作窗口为 2 时，预测序号 `0,1,2,3,4,5,6,7` 对应执行 `0,1`。报告演示使用人工样例，保留 `synthetic_example` 标记。
+
 ## 接入真实 LIBERO 评估
 
 先按 [原始仿真说明](openvla-SF/readme.md) 安装依赖、LIBERO 和 checkpoint。进入 `openvla-SF` 后运行：
@@ -58,6 +70,9 @@ python tools/summarize_eval.py path/to/run-1.json path/to/run-2.json --csv repor
 ---
 
 <a id="upstream-project"></a>
+
+<details>
+<summary>展开上游 Spatial-Forcing 原始介绍、论文与致谢</summary>
 
 # Spatial Forcing: Implicit Spatial Representation Alignment for Vision-language-action Model
 <div align="center">
@@ -137,3 +152,6 @@ If you find this work useful, please cite:
   year      = {2025},
 }
 ```
+
+
+</details>
