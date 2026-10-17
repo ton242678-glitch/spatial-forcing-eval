@@ -49,6 +49,11 @@ from experiments.robot.robot_utils import (
     set_seed_everywhere,
 )
 from prismatic.vla.constants import NUM_ACTIONS_CHUNK
+from experiments.robot.libero.eval_support import (
+    EvaluationReport,
+    select_action_chunk,
+    validate_evaluation_config,
+)
 
 
 # Define task suite constants
@@ -133,15 +138,11 @@ class GenerateConfig:
 
 def validate_config(cfg: GenerateConfig) -> None:
     """Validate configuration parameters."""
-    assert cfg.pretrained_checkpoint is not None, "pretrained_checkpoint must not be None!"
-
-    if "image_aug" in str(cfg.pretrained_checkpoint):
-        assert cfg.center_crop, "Expecting `center_crop==True` because model was trained with image augmentations!"
-
-    assert not (cfg.load_in_8bit and cfg.load_in_4bit), "Cannot use both 8-bit and 4-bit quantization!"
-
-    # Validate task suite
-    assert cfg.task_suite_name in [suite.value for suite in TaskSuite], f"Invalid task suite: {cfg.task_suite_name}"
+    validate_evaluation_config(
+        cfg,
+        task_suites={suite.value for suite in TaskSuite},
+        action_chunk_size=NUM_ACTIONS_CHUNK,
+    )
 
 
 def initialize_model(cfg: GenerateConfig):
@@ -288,6 +289,7 @@ def run_episode(
     noisy_action_projector=None,
     initial_state=None,
     log_file=None,
+    episode_metrics=None,
 ):
     """Run a single episode in the environment."""
     # Reset environment
@@ -339,7 +341,7 @@ def run_episode(
                     noisy_action_projector=noisy_action_projector,
                     use_film=cfg.use_film,
                 )
-                action_queue.extend(actions)
+                action_queue.extend(select_action_chunk(actions, cfg.num_open_loop_steps))
 
             # Get action from queue
             action = action_queue.popleft()
@@ -356,6 +358,8 @@ def run_episode(
 
     except Exception as e:
         log_message(f"Episode error: {e}", log_file)
+        if episode_metrics is not None:
+            episode_metrics["error"] = f"{type(e).__name__}: {e}"
 
     return success, replay_images
 
@@ -373,6 +377,7 @@ def run_task(
     total_episodes=0,
     total_successes=0,
     log_file=None,
+    report=None,
 ):
     """Run evaluation for a single task."""
     # Get task
@@ -401,6 +406,8 @@ def run_task(
             # Skip episode if expert demonstration failed to complete the task
             if not all_initial_states[initial_states_task_key][episode_key]["success"]:
                 log_message(f"Skipping task {task_id} episode {episode_idx} due to failed expert demo!", log_file)
+                if report is not None:
+                    report.record(task_id, episode_idx, task_description, skipped=True)
                 continue
 
             # Get initial state
@@ -409,6 +416,7 @@ def run_task(
         log_message(f"Starting episode {task_episodes + 1}...", log_file)
 
         # Run episode
+        episode_metrics = {}
         success, replay_images = run_episode(
             cfg,
             env,
@@ -421,6 +429,7 @@ def run_task(
             noisy_action_projector,
             initial_state,
             log_file,
+            episode_metrics=episode_metrics,
         )
 
         # Update counters
@@ -429,6 +438,11 @@ def run_task(
         if success:
             task_successes += 1
             total_successes += 1
+
+        # Persist the outcome before video encoding, which can fail independently.
+        if report is not None:
+            report.record(task_id, episode_idx, task_description,
+                          success=success, error=episode_metrics.get("error"))
 
         # Save replay video
         save_rollout_video(
@@ -477,55 +491,41 @@ def eval_libero(cfg: GenerateConfig) -> float:
     # Setup logging
     log_file, local_log_filepath, run_id = setup_logging(cfg)
 
-    # Initialize LIBERO task suite
-    benchmark_dict = benchmark.get_benchmark_dict()
-    task_suite = benchmark_dict[cfg.task_suite_name]()
-    num_tasks = task_suite.n_tasks
+    report = None
+    try:
+        report = EvaluationReport(Path(local_log_filepath).with_suffix(".json"), run_id, cfg)
+        # Initialize LIBERO task suite
+        benchmark_dict = benchmark.get_benchmark_dict()
+        task_suite = benchmark_dict[cfg.task_suite_name]()
+        num_tasks = task_suite.n_tasks
+        log_message(f"Task suite: {cfg.task_suite_name}", log_file)
 
-    log_message(f"Task suite: {cfg.task_suite_name}", log_file)
+        total_episodes, total_successes = 0, 0
+        for task_id in tqdm.tqdm(range(num_tasks)):
+            total_episodes, total_successes = run_task(
+                cfg, task_suite, task_id, model, resize_size,
+                processor, action_head, proprio_projector, noisy_action_projector,
+                total_episodes, total_successes, log_file, report=report,
+            )
 
-    # Start evaluation
-    total_episodes, total_successes = 0, 0
-    for task_id in tqdm.tqdm(range(num_tasks)):
-        total_episodes, total_successes = run_task(
-            cfg,
-            task_suite,
-            task_id,
-            model,
-            resize_size,
-            processor,
-            action_head,
-            proprio_projector,
-            noisy_action_projector,
-            total_episodes,
-            total_successes,
-            log_file,
-        )
-
-    # Calculate final success rate
-    final_success_rate = float(total_successes) / float(total_episodes) if total_episodes > 0 else 0
-
-    # Log final results
-    log_message("Final results:", log_file)
-    log_message(f"Total episodes: {total_episodes}", log_file)
-    log_message(f"Total successes: {total_successes}", log_file)
-    log_message(f"Overall success rate: {final_success_rate:.4f} ({final_success_rate * 100:.1f}%)", log_file)
-
-    # Log to wandb if enabled
-    if cfg.use_wandb:
-        wandb.log(
-            {
-                "success_rate/total": final_success_rate,
-                "num_episodes/total": total_episodes,
-            }
-        )
-        wandb.save(local_log_filepath)
-
-    # Close log file
-    if log_file:
-        log_file.close()
-
-    return final_success_rate
+        final_success_rate = float(total_successes) / float(total_episodes) if total_episodes > 0 else 0
+        log_message("Final results:", log_file)
+        log_message(f"Total episodes: {total_episodes}", log_file)
+        log_message(f"Total successes: {total_successes}", log_file)
+        log_message(f"Overall success rate: {final_success_rate:.4f} ({final_success_rate * 100:.1f}%)", log_file)
+        if cfg.use_wandb:
+            wandb.log({"success_rate/total": final_success_rate, "num_episodes/total": total_episodes})
+            wandb.save(local_log_filepath)
+        report.finish()
+        log_message(f"Structured evaluation report: {report.path}", log_file)
+        return final_success_rate
+    except BaseException as error:
+        if report is not None and report.payload["status"] == "running":
+            report.finish(error=f"{type(error).__name__}: {error}")
+        raise
+    finally:
+        if log_file:
+            log_file.close()
 
 
 if __name__ == "__main__":

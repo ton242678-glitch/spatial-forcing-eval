@@ -1,3 +1,64 @@
+# Spatial-Forcing Eval：评估可靠性扩展
+
+[![Evaluation regression tests](https://github.com/ton242678-glitch/spatial-forcing-eval/actions/workflows/eval-tests.yml/badge.svg)](https://github.com/ton242678-glitch/spatial-forcing-eval/actions/workflows/eval-tests.yml)
+
+**这是 Spatial-Forcing 的衍生评估改进仓库。原论文、模型和原始实现属于原作者，本仓库新增的是动作窗口修复、配置检查、结构化结果和回归测试。**
+
+Forked from [yifanwu-victor/Spatial-Forcing](https://github.com/yifanwu-victor/Spatial-Forcing), originally developed by [OpenHelix-Team](https://github.com/OpenHelix-Team/Spatial-Forcing). Baseline: `372819b31ba9a2c8fc5989edc7d525cb187cecd5`.
+
+## 本次实现的三个切入点
+
+| 切入点 | 源码中发现的问题 | 本仓库的改进 |
+| --- | --- | --- |
+| 动作执行窗口 | 当 `num_open_loop_steps=2`，把 8 个预测动作加入容量为 2 的 `deque`，会留下最后两个动作 | 显式取前两个动作，保持时间顺序；默认 8 步行为保持一致 |
+| 无效参数尽早报错 | 空 checkpoint、非正执行步数等参数缺少检查，部分断言会被 `python -O` 关闭 | 加载模型权重前抛出明确的 `ValueError`，校验冲突选项和数值范围 |
+| 实验结果便于比较 | 文本日志难以按任务比较，异常与普通失败混在一起 | 每轮原子写入 JSON，记录任务、seed、配置、成功/失败/异常/跳过；支持多报告 CSV 导出 |
+
+这些改进提高评估行为的可解释性和结果可追溯性。**尚未进行完整模型仿真或真机实验，不报告成功率或速度提升。**
+
+## 不需要 GPU 的快速体验
+
+在仓库根目录运行以下命令。新增工具只用 Python 标准库，Python 3.10+ 即可，无需安装 PyTorch 或下载模型。
+
+```bash
+python -m unittest discover -s tests -v
+python tools/demo_eval_report.py --output reports/synthetic-demo.json
+python tools/summarize_eval.py reports/synthetic-demo.json --csv reports/synthetic-summary.csv
+```
+
+演示只生成明确标为 `synthetic_example` 的人工样例，不是机器人评估成绩。CSV 保留这一标记，避免与真实评估混淆。
+
+## 接入真实 LIBERO 评估
+
+先按 [原始仿真说明](openvla-SF/readme.md) 安装依赖、LIBERO 和 checkpoint。进入 `openvla-SF` 后运行：
+
+```bash
+python experiments/robot/libero/run_libero_eval.py \
+  --pretrained_checkpoint ckpts/spatial-forcing-7b-finetuned-libero-spatial \
+  --task_suite_name libero_spatial \
+  --num_open_loop_steps 2
+```
+
+新增 JSON 会保存在与原 `.txt` 日志相同的目录，文件名相同、后缀为 `.json`。回到仓库根目录后可比较多个报告：
+
+```bash
+python tools/summarize_eval.py path/to/run-1.json path/to/run-2.json --csv reports/comparison.csv
+```
+
+完整推理仍依赖原项目的模型、仿真环境和 GPU 配置。工具在 Windows 上可用，不代表原项目的完整训练环境已在 Windows 验证。
+
+- [实现依据、测试范围与统计口径](docs/evaluation_extensions_zh.md)
+- [进一步研究的四个切入方向](docs/research_directions_zh.md)
+- [上游原始项目说明](#upstream-project)
+
+## 来源与许可
+
+原始提交历史、作者列表和许可文件均保留。根目录 MIT 许可见 [LICENSE](LICENSE)；`openpi-SF` 子项目许可见 [openpi-SF/LICENSE](openpi-SF/LICENSE)。新增代码沿用根目录 MIT 许可。下方为保留的上游项目介绍，其中性能数据均是原作者报告，与本仓库新增改进的验证范围不同。
+
+---
+
+<a id="upstream-project"></a>
+
 # Spatial Forcing: Implicit Spatial Representation Alignment for Vision-language-action Model
 <div align="center">
 

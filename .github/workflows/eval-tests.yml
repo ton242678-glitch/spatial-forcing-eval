@@ -1,0 +1,32 @@
+name: Evaluation regression tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run dependency-free regression tests
+        run: python -m unittest discover -s tests -v
+      - name: Check modified evaluator syntax
+        run: python -m py_compile openvla-SF/experiments/robot/libero/run_libero_eval.py openvla-SF/experiments/robot/libero/eval_support.py
+      - name: Try synthetic report and CSV export
+        run: |
+          python tools/demo_eval_report.py --output reports/synthetic-demo.json
+          python tools/summarize_eval.py reports/synthetic-demo.json --csv reports/synthetic-summary.csv

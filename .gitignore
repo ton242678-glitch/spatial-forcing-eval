@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+!.env.example
+/reports/
+**/ckpts/
+**/checkpoints/
+**/wandb/
+openvla-SF/data/
+openvla-SF/experiments/logs/
+*.pt
+*.pth
+*.safetensors
